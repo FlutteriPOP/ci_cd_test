@@ -1,43 +1,150 @@
-name: Flutter CI/CD
+name: Flutter Multi-Platform Release
 
 on:
   push:
-    branches: [ main ]
-  pull_request:
+    tags:
+      - 'v*'   # tag like v1.0.0
+
+permissions:
+  contents: write
 
 jobs:
-  build-and-test:
-    runs-on: ubuntu-latest
+  build:
+    name: Build - ${{ matrix.platform }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: android
+            runner: ubuntu-latest
+          - platform: linux
+            runner: ubuntu-latest
+          - platform: windows
+            runner: windows-latest
+          - platform: macos
+            runner: macos-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
-          channel: stable        # FIXED
+          channel: stable
           cache: true
 
-      - name: Cache dependencies
-        uses: actions/cache@v4
-        with:
-          path: ~/.pub-cache
-          key: ${{ runner.os }}-pub-${{ hashFiles('pubspec.lock') }}
+      - name: Read version from pubspec.yaml
+        id: version
+        shell: bash
+        run: |
+          # extract semantic version (strip +build)
+          VERSION=$(grep '^version:' pubspec.yaml | sed 's/version: //;s/+.*//')
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
 
       - name: Install dependencies
         run: flutter pub get
+        shell: bash
 
-      - name: Analyze code
-        run: flutter analyze
+      - name: Build platform artifacts
+        shell: bash
+        run: |
+          PLATFORM=${{ matrix.platform }}
+          if [ "$PLATFORM" = "android" ]; then
+            flutter build apk --release
+            flutter build appbundle --release
+          elif [ "$PLATFORM" = "linux" ]; then
+            flutter build linux --release
+          elif [ "$PLATFORM" = "windows" ]; then
+            # On windows runner this runs under bash; use flutter CLI which is available
+            flutter build windows --release
+          elif [ "$PLATFORM" = "macos" ]; then
+            flutter build macos --release
+          fi
 
-      - name: Formate code
-        run: dart format .
+      - name: Package artifacts (Unix-like)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          mkdir -p artifacts
+          V=${{ steps.version.outputs.version }}
 
-      - name: Build release APK
-        run: flutter build apk --release
+          if [ "${{ matrix.platform }}" = "android" ]; then
+            cp -v build/app/outputs/flutter-apk/app-release.apk artifacts/test-$V-android.apk || true
+            cp -v build/app/outputs/bundle/release/app-release.aab artifacts/test-$V-android.aab || true
+          fi
 
-      - name: Upload APK artifact
+          if [ "${{ matrix.platform }}" = "linux" ]; then
+            # pack the linux release bundle
+            if [ -d build/linux/x64/release/bundle ]; then
+              tar -czf artifacts/test-$V-linux.tar.gz -C build/linux/x64/release/bundle .
+            else
+              echo "Linux bundle not found"
+            fi
+          fi
+
+          if [ "${{ matrix.platform }}" = "macos" ]; then
+            # Adjust path if your app name differs; this zips Release products folder
+            if [ -d build/macos/Build/Products/Release ]; then
+              zip -r artifacts/test-$V-macos.zip build/macos/Build/Products/Release
+            else
+              echo "macOS release folder not found"
+            fi
+          fi
+
+      - name: Package artifacts (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $V = "${{ steps.version.outputs.version }}"
+          New-Item -ItemType Directory -Force -Path artifacts | Out-Null
+
+          if (Test-Path "build/app/outputs/flutter-apk/app-release.apk") {
+            Copy-Item "build/app/outputs/flutter-apk/app-release.apk" -Destination "artifacts/test-$V-android.apk" -Force
+          }
+          if (Test-Path "build/app/outputs/bundle/release/app-release.aab") {
+            Copy-Item "build/app/outputs/bundle/release/app-release.aab" -Destination "artifacts/test-$V-android.aab" -Force
+          }
+          if (Test-Path "build/windows/runner/Release") {
+            Compress-Archive -Path "build/windows/runner/Release/*" -DestinationPath "artifacts/test-$V-windows.zip" -Force
+          } else {
+            Write-Host "Windows release folder not found"
+          }
+
+      - name: Upload build artifacts (per platform)
         uses: actions/upload-artifact@v4
         with:
-          name: app-release
-          path: build/app/outputs/flutter-apk/app-release.apk
+          name: build-${{ matrix.platform }}
+          path: artifacts/
+
+  publish:
+    name: Publish Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (needed to read pubspec and for context)
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-files
+
+      - name: Read Version (from repo)
+        id: version2
+        run: |
+          VERSION=$(grep '^version:' pubspec.yaml | sed 's/version: //;s/+.*//')
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+        shell: bash
+
+      - name: Create GitHub Release (and upload artifacts)
+        uses: softprops/action-gh-release@v2
+        with:
+          # Use the tag that triggered the workflow so the created release maps to the pushed tag
+          tag_name: ${{ github.ref_name }}
+          # Friendly release title
+          name: test-${{ steps.version2.outputs.version }}
+          files: release-files/**/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

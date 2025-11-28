@@ -1,0 +1,71 @@
+name: Flutter CI/CD
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    name: Build & Test Flutter App
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      # Checkout code
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # Setup Flutter with caching
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: stable
+          cache: true  # enables automatic flutter cache
+
+      # Extra Pub cache
+      - name: Cache pub dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.pub-cache
+          key: ${{ runner.os }}-pub-${{ hashFiles('pubspec.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-pub-
+
+      # Install deps
+      - name: Install Dependencies
+        run: flutter pub get
+
+      # Analyze
+      - name: Run Flutter Analyze
+        run: flutter analyze --no-fatal-warnings
+
+      # Tests
+      - name: Run Tests
+        run: flutter test --no-pub
+
+      # Build APK (release)
+      - name: Build Release APK
+        run: flutter build apk --release --no-tree-shake-icons
+
+      # Build AppBundle (optional; for Play Store)
+      - name: Build AAB
+        run: flutter build appbundle --release --no-tree-shake-icons
+
+      # Upload APK
+      - name: Upload APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-release-apk
+          path: build/app/outputs/flutter-apk/app-release.apk
+
+      # Upload AAB
+      - name: Upload AAB Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-release-aab
+          path: build/app/outputs/bundle/release/app-release.aab

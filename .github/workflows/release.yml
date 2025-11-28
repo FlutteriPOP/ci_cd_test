@@ -41,6 +41,7 @@ jobs:
       - name: Package Ubuntu Artifacts
         run: |
           mkdir -p artifacts
+          # strip leading "v" from tag
           V=${GITHUB_REF_NAME#v}
 
           # Android
@@ -78,9 +79,11 @@ jobs:
 
       - name: Package Windows
         run: |
-          $V = "${{ github.ref_name#v }}"
+          # strip leading "v" from tag in PowerShell
+          $V = $Env:GITHUB_REF_NAME -replace '^v',''
           New-Item -ItemType Directory -Force -Path artifacts | Out-Null
           Compress-Archive -Path build/windows/runner/Release/* -DestinationPath artifacts/windows-$V.zip -Force
+        shell: pwsh
 
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
@@ -124,8 +127,8 @@ jobs:
 
       - name: Package iOS + macOS
         run: |
-          V=${GITHUB_REF_NAME#v}
           mkdir -p artifacts
+          V=${GITHUB_REF_NAME#v}
 
           # iOS
           cp build/ios/ipa/*.ipa artifacts/ios-$V.ipa || true

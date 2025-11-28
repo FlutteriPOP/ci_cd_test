@@ -4,68 +4,40 @@ on:
   push:
     branches: [ main ]
   pull_request:
-    branches: [ main ]
-
-permissions:
-  contents: read
 
 jobs:
   build-and-test:
-    name: Build & Test Flutter App
     runs-on: ubuntu-latest
-    timeout-minutes: 20
 
     steps:
-      # Checkout code
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      # Setup Flutter with caching
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: stable
-          cache: true  # enables automatic flutter cache
+          channel: stable        # FIXED
+          cache: true
 
-      # Extra Pub cache
-      - name: Cache pub dependencies
+      - name: Cache dependencies
         uses: actions/cache@v4
         with:
           path: ~/.pub-cache
           key: ${{ runner.os }}-pub-${{ hashFiles('pubspec.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-pub-
 
-      # Install deps
-      - name: Install Dependencies
+      - name: Install dependencies
         run: flutter pub get
 
-      # Analyze
-      - name: Run Flutter Analyze
-        run: flutter analyze --no-fatal-warnings
+      - name: Analyze code
+        run: flutter analyze
 
-      # Tests
-      - name: Run Tests
-        run: flutter test --no-pub
+      - name: Run tests
+        run: flutter test
 
-      # Build APK (release)
-      - name: Build Release APK
-        run: flutter build apk --release --no-tree-shake-icons
+      - name: Build release APK
+        run: flutter build apk --release
 
-      # Build AppBundle (optional; for Play Store)
-      - name: Build AAB
-        run: flutter build appbundle --release --no-tree-shake-icons
-
-      # Upload APK
-      - name: Upload APK Artifact
+      - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: app-release-apk
+          name: app-release
           path: build/app/outputs/flutter-apk/app-release.apk
-
-      # Upload AAB
-      - name: Upload AAB Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: app-release-aab
-          path: build/app/outputs/bundle/release/app-release.aab

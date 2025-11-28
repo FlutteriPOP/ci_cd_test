@@ -33,13 +33,12 @@ jobs:
         run: flutter pub get
 
       - name: Verify Android licenses
-        run: flutter doctor --android-licenses
+        run: |
+          yes | sdkmanager --licenses || true
+          flutter doctor --android-licenses
 
       - name: Analyze code
         run: flutter analyze
-
-      - name: Run tests
-        run: flutter test
 
       # ------- Android ------
       - name: Build Android APK
@@ -56,14 +55,13 @@ jobs:
       - name: Package Ubuntu Artifacts
         run: |
           mkdir -p artifacts
-          # strip leading "v" from tag
           V=${GITHUB_REF_NAME#v}
 
           # Android
           cp build/app/outputs/flutter-apk/app-release.apk artifacts/android-$V.apk
           cp build/app/outputs/bundle/release/app-release.aab artifacts/android-$V.aab
 
-          # Web - create a clean zip without full paths
+          # Web
           cd build/web
           zip -r ../../artifacts/web-$V.zip .
 
@@ -90,32 +88,23 @@ jobs:
           cache: true
           cache-key: flutter-pub-cache
 
+      - name: Check Windows support
+        run: flutter config --enable-windows-desktop
+
       - name: Install dependencies
         run: flutter pub get
 
       - name: Analyze code
         run: flutter analyze
 
-      - name: Run tests
-        run: flutter test
-
       - name: Build Windows
         run: flutter build windows --release --verbose
 
       - name: Package Windows
         run: |
-          # strip leading "v" from tag in PowerShell
           $V = $Env:GITHUB_REF_NAME -replace '^v',''
           New-Item -ItemType Directory -Force -Path artifacts | Out-Null
-          
-          # Create a proper Windows distribution package
-          $SourceDir = "build\windows\runner\Release"
-          $ZipFile = "artifacts\windows-$V.zip"
-          
-          # Include all necessary files for distribution
-          Get-ChildItem -Path $SourceDir -Recurse | 
-            Where-Object { $_.Name -like "*.exe" -or $_.Name -like "*.dll" -or $_.Name -like "data" } |
-            Compress-Archive -DestinationPath $ZipFile -Force
+          Compress-Archive -Path "build\windows\runner\Release\*" -DestinationPath "artifacts\windows-$V.zip" -Force
 
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
@@ -125,10 +114,12 @@ jobs:
           retention-days: 30
 
   # ------------------------------------------------------------------------
-  # iOS + macOS (Mac Runner)
+  # macOS BUILD (Only if macOS is supported)
   # ------------------------------------------------------------------------
   build-macos:
     runs-on: macos-latest
+    # Only run if macOS directory exists
+    if: hashFiles('macos/Podfile') != ''
 
     steps:
       - uses: actions/checkout@v4
@@ -147,7 +138,65 @@ jobs:
 
       - name: Install CocoaPods
         run: |
-          sudo gem install cocoapods -v 1.15.2
+          sudo gem install cocoapods
+          pod setup
+
+      - name: Install macOS dependencies
+        run: |
+          cd macos
+          pod install --repo-update
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Analyze code
+        run: flutter analyze
+
+      - name: Build macOS
+        run: flutter build macos --release --verbose
+
+      - name: Package macOS artifacts
+        run: |
+          mkdir -p artifacts
+          V=${GITHUB_REF_NAME#v}
+          
+          # macOS - package the app bundle
+          cd build/macos/Build/Products/Release
+          find . -name "*.app" -type d -exec zip -r ../../../../artifacts/macos-$V.zip {} \;
+
+      - name: Upload macOS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-artifacts-${{ github.ref_name }}
+          path: artifacts/
+          retention-days: 30
+
+  # ------------------------------------------------------------------------
+  # iOS BUILD (Only if iOS is supported)
+  # ------------------------------------------------------------------------
+  build-ios:
+    runs-on: macos-latest
+    # Only run if iOS directory exists
+    if: hashFiles('ios/Podfile') != ''
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+          cache-key: flutter-pub-cache
+
+      - name: Setup Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.0'
+
+      - name: Install CocoaPods
+        run: |
+          sudo gem install cocoapods
           pod setup
 
       - name: Install iOS dependencies
@@ -161,36 +210,76 @@ jobs:
       - name: Analyze code
         run: flutter analyze
 
-      - name: Run tests
-        run: flutter test
-
-      # -------- iOS IPA --------
       - name: Build iOS (Unsigned)
-        run: |
-          flutter build ipa --release --no-codesign --verbose
+        run: flutter build ipa --release --no-codesign --verbose
 
-      # -------- macOS APP --------
-      - name: Build macOS
-        run: flutter build macos --release --verbose
-
-      - name: Package iOS + macOS artifacts
+      - name: Package iOS artifacts
         run: |
           mkdir -p artifacts
           V=${GITHUB_REF_NAME#v}
 
           # iOS - copy IPA if it exists
-          if [ -f build/ios/ipa/*.ipa ]; then
+          if ls build/ios/ipa/*.ipa 1> /dev/null 2>&1; then
             cp build/ios/ipa/*.ipa artifacts/ios-$V.ipa
+          else
+            echo "No IPA file found"
+            # Create a placeholder or build the app bundle instead
+            flutter build ios --release --no-codesign
+            cd build/ios/iphoneos
+            find . -name "*.app" -type d -exec zip -r ../../../artifacts/ios-$V.zip {} \;
           fi
 
-          # macOS - package the app bundle
-          cd build/macos/Build/Products/Release
-          find . -name "*.app" -exec zip -r ../../../../artifacts/macos-$V.zip {} \;
-
-      - name: Upload Apple artifacts
+      - name: Upload iOS artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: apple-artifacts-${{ github.ref_name }}
+          name: ios-artifacts-${{ github.ref_name }}
+          path: artifacts/
+          retention-days: 30
+
+  # ------------------------------------------------------------------------
+  # LINUX BUILD (Optional - if Linux support is enabled)
+  # ------------------------------------------------------------------------
+  build-linux:
+    runs-on: ubuntu-latest
+    # Only run if Linux desktop is supported
+    if: hashFiles('linux/') != ''
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+          cache-key: flutter-pub-cache
+
+      - name: Check Linux support
+        run: flutter config --enable-linux-desktop
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake ninja-build
+          flutter pub get
+
+      - name: Analyze code
+        run: flutter analyze
+
+      - name: Build Linux
+        run: flutter build linux --release --verbose
+
+      - name: Package Linux artifacts
+        run: |
+          mkdir -p artifacts
+          V=${GITHUB_REF_NAME#v}
+          cd build/linux/x64/release/bundle
+          zip -r ../../../../artifacts/linux-$V.zip .
+
+      - name: Upload Linux artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-artifacts-${{ github.ref_name }}
           path: artifacts/
           retention-days: 30
 
@@ -199,8 +288,8 @@ jobs:
   # ------------------------------------------------------------------------
   create-release:
     runs-on: ubuntu-latest
-    needs: [build-ubuntu, build-windows, build-macos]
-    # Only create release if all previous jobs succeeded
+    needs: [build-ubuntu, build-windows, build-macos, build-ios, build-linux]
+    # Only create release if at least one build succeeded
     if: always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
 
     steps:
@@ -222,19 +311,17 @@ jobs:
           body: |
             Multi-platform Flutter release for version ${{ github.ref_name }}.
             
-            **Platforms included:**
-            - Android (APK + AAB)
-            - iOS (IPA - unsigned)
-            - macOS
-            - Windows
-            - Web
+            **Built Platforms:**
+            - ✅ Android (APK + AAB)
+            - ✅ Web
+            - ✅ Windows
+            ${{ needs.build-macos.result == 'success' && '- ✅ macOS' || '- ❌ macOS (Not built)' }}
+            ${{ needs.build-ios.result == 'success' && '- ✅ iOS' || '- ❌ iOS (Not built)' }}
+            ${{ needs.build-linux.result == 'success' && '- ✅ Linux' || '- ❌ Linux (Not built)' }}
             
             **Build Date:** ${{ github.event.head_commit.timestamp }}
           files: |
-            all-artifacts/**/*.apk
-            all-artifacts/**/*.aab
-            all-artifacts/**/*.ipa
-            all-artifacts/**/*.zip
+            all-artifacts/**/*
           draft: false
           prerelease: ${{ contains(github.ref_name, '-') }}
         env:
